@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 import time
 
 # ==== KONFIGURACJA ====
-DISCORD_WEBHOOK = "TU_WKLEJ_SWÓJ_LINK_WEBHOOK"
+DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1430120682758471710/oSF0KcorzVj74oL91zLz-wRdtdnh3QCed-B9Vz5pQw_mmi5CdCiT4bDv4tjg5eS1tK6k"
 SEARCH_TERMS = ["iphone", "samsung galaxy", "xiaomi"]
 CHECK_INTERVAL = 60  # czas w sekundach
 
