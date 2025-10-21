@@ -1,80 +1,124 @@
-import requests, time, sqlite3, os
+import requests
 from bs4 import BeautifulSoup
+import time
 
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-DB = "seen.db"
-SEARCH_TERMS = ["iphone 12", "iphone 13 pro"]  # modele do śledzenia
-CHECK_INTERVAL = 60  # sekundy
+# ==== KONFIGURACJA ====
+DISCORD_WEBHOOK = "TU_WKLEJ_SWÓJ_LINK_WEBHOOK"
+SEARCH_TERMS = ["iphone", "samsung galaxy", "xiaomi"]
+CHECK_INTERVAL = 60  # czas w sekundach
 
-def init_db():
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, title TEXT, price TEXT, url TEXT)")
-    conn.commit()
-    conn.close()
-
-def is_seen(offer_id):
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT 1 FROM seen WHERE id=?", (offer_id,))
-    r = c.fetchone()
-    conn.close()
-    return r is not None
-
-def mark_seen(offer_id, title, price, url):
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO seen(id, title, price, url) VALUES(?,?,?,?)", (offer_id, title, price, url))
-    conn.commit()
-    conn.close()
-
-def send_discord(title, price, url):
+# ===== Funkcja wysyłająca wiadomości na Discord =====
+def send_discord(title, price, url, location, platform):
     data = {
         "username": "AukcjeBot",
         "embeds": [{
-            "title": title,
+            "title": f"{title} ({platform})",
             "url": url,
-            "description": f"💸 Cena: {price}",
+            "description": f"💸 Cena: {price}\n📍 Lokalizacja: {location}",
             "color": 0x00ff00
         }]
     }
-    requests.post(DISCORD_WEBHOOK, json=data)
+    try:
+        requests.post(DISCORD_WEBHOOK, json=data)
+    except Exception as e:
+        print("Błąd przy wysyłaniu na Discord:", e)
 
-def get_offers(term):
-    term_q = term.replace(" ", "+")
-    url = f"https://allegro.pl/listing?string={term_q}&order=d"
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-    soup = BeautifulSoup(r.text, "html.parser")
+# ===== Funkcja scraper Allegro =====
+def scrape_allegro(term):
+    url = f"https://allegro.pl/listing?string={term}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        r = requests.get(url, headers=headers)
+        soup = BeautifulSoup(r.text, "html.parser")
+        offers = soup.select("div.selling")[:5]  # pierwsze 5 ofert
+        results = []
+        for o in offers:
+            title_tag = o.select_one("h2")
+            price_tag = o.select_one("span._1svub._lf05o")
+            url_tag = o.select_one("a")
+            location_tag = o.select_one("span._1lbi1")
+            if title_tag and price_tag and url_tag:
+                results.append({
+                    "title": title_tag.text.strip(),
+                    "price": price_tag.text.strip(),
+                    "url": url_tag['href'],
+                    "location": location_tag.text.strip() if location_tag else "Nieznana"
+                })
+        return results
+    except Exception as e:
+        print("Allegro błąd:", e)
+        return []
 
-    offers = []
-    for item in soup.select("article[data-analytics-view-custom-index]"):
-        link = item.find("a", {"data-analytics-view-custom-index": True})
-        if not link:
-            continue
-        offer_url = link.get("href")
-        offer_id = offer_url.split("/")[-1].split("?")[0]
-        title_el = item.select_one("h2")
-        price_el = item.select_one("span[data-role='price']") or item.select_one("span[data-testid='price']")
-        title = title_el.text.strip() if title_el else "Brak tytułu"
-        price = price_el.text.strip() if price_el else "Brak ceny"
-        offers.append({"id": offer_id, "title": title, "price": price, "url": offer_url})
-    return offers
+# ===== Funkcja scraper OLX =====
+def scrape_olx(term):
+    url = f"https://www.olx.pl/oferty/q-{term}/"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        r = requests.get(url, headers=headers)
+        soup = BeautifulSoup(r.text, "html.parser")
+        offers = soup.select("li[data-cy='l-card']")[:5]
+        results = []
+        for o in offers:
+            title_tag = o.select_one("h6")
+            price_tag = o.select_one("p")
+            url_tag = o.select_one("a")
+            location_tag = o.select_one("span[data-testid='location-date']")
+            if title_tag and price_tag and url_tag:
+                results.append({
+                    "title": title_tag.text.strip(),
+                    "price": price_tag.text.strip(),
+                    "url": url_tag['href'],
+                    "location": location_tag.text.strip() if location_tag else "Nieznana"
+                })
+        return results
+    except Exception as e:
+        print("OLX błąd:", e)
+        return []
 
-def main():
-    init_db()
-    while True:
-        for term in SEARCH_TERMS:
-            print(f"[INFO] Szukam nowości: {term}")
-            try:
-                offers = get_offers(term)
-                for o in offers[:5]:  # 5 najnowszych
-                    if not is_seen(o["id"]):
-                        print(f"🆕 Nowa oferta: {o['title']} — {o['price']}")
-                        send_discord(o["title"], o["price"], o["url"])
-                        mark_seen(o["id"], o["title"], o["price"], o["url"])
-            except Exception as e:
-                print("Błąd:", e)
-        time.sleep(CHECK_INTERVAL)
+# ===== Funkcja scraper Vinted =====
+def scrape_vinted(term):
+    url = f"https://www.vinted.pl/catalog?search_text={term}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        r = requests.get(url, headers=headers)
+        soup = BeautifulSoup(r.text, "html.parser")
+        offers = soup.select("div.catalog-item")[:5]
+        results = []
+        for o in offers:
+            title_tag = o.select_one("a.catalog-item__title")
+            price_tag = o.select_one("div.catalog-item__price")
+            url_tag = o.select_one("a.catalog-item__link")
+            location_tag = o.select_one("div.catalog-item__location")
+            if title_tag and price_tag and url_tag:
+                results.append({
+                    "title": title_tag.text.strip(),
+                    "price": price_tag.text.strip(),
+                    "url": "https://www.vinted.pl" + url_tag['href'],
+                    "location": location_tag.text.strip() if location_tag else "Nieznana"
+                })
+        return results
+    except Exception as e:
+        print("Vinted błąd:", e)
+        return []
 
-if __name__ == "__main__":
-    main()
+# ===== Główna pętla =====
+already_seen = set()
+
+while True:
+    for term in SEARCH_TERMS:
+        for offer in scrape_allegro(term):
+            key = (offer['title'], offer['price'], offer['url'])
+            if key not in already_seen:
+                send_discord(offer['title'], offer['price'], offer['url'], offer['location'], "Allegro")
+                already_seen.add(key)
+        for offer in scrape_olx(term):
+            key = (offer['title'], offer['price'], offer['url'])
+            if key not in already_seen:
+                send_discord(offer['title'], offer['price'], offer['url'], offer['location'], "OLX")
+                already_seen.add(key)
+        for offer in scrape_vinted(term):
+            key = (offer['title'], offer['price'], offer['url'])
+            if key not in already_seen:
+                send_discord(offer['title'], offer['price'], offer['url'], offer['location'], "Vinted")
+                already_seen.add(key)
+    time.sleep(CHECK_INTERVAL)
