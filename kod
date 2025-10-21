@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from flask import Flask
 
 # ===== KONFIGURACJA =====
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK") or "TU_WKLEJ_SWÓJ_LINK_WEBHOOK"
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK") or "https://discord.com/api/webhooks/1430120682758471710/oSF0KcorzVj74oL91zLz-wRdtdnh3QCed-B9Vz5pQw_mmi5CdCiT4bDv4tjg5eS1tK6k"
 SEARCH_TERMS = ["iphone", "samsung galaxy", "xiaomi"]  # edytuj wedle potrzeby
 CHECK_INTERVAL = 60  # sekundy - zmień jeśli chcesz rzadziej/co szybciej
 
