@@ -1,124 +1,171 @@
+# kod - bot + keep-alive dla Replit
+import os
+import threading
+import time
 import requests
 from bs4 import BeautifulSoup
-import time
+from flask import Flask
 
-# ==== KONFIGURACJA ====
-DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1430120682758471710/oSF0KcorzVj74oL91zLz-wRdtdnh3QCed-B9Vz5pQw_mmi5CdCiT4bDv4tjg5eS1tK6k"
-SEARCH_TERMS = ["iphone", "samsung galaxy", "xiaomi"]
-CHECK_INTERVAL = 60  # czas w sekundach
+# ===== KONFIGURACJA =====
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK") or "TU_WKLEJ_SWÓJ_LINK_WEBHOOK"
+SEARCH_TERMS = ["iphone", "samsung galaxy", "xiaomi"]  # edytuj wedle potrzeby
+CHECK_INTERVAL = 60  # sekundy - zmień jeśli chcesz rzadziej/co szybciej
 
-# ===== Funkcja wysyłająca wiadomości na Discord =====
+# ===== FUNKCJA DO WYSYŁANIA NA DISCORD =====
 def send_discord(title, price, url, location, platform):
-    data = {
+    if not DISCORD_WEBHOOK:
+        print("Brak DISCORD_WEBHOOK")
+        return
+    payload = {
         "username": "AukcjeBot",
         "embeds": [{
             "title": f"{title} ({platform})",
             "url": url,
             "description": f"💸 Cena: {price}\n📍 Lokalizacja: {location}",
-            "color": 0x00ff00
         }]
     }
     try:
-        requests.post(DISCORD_WEBHOOK, json=data)
+        r = requests.post(DISCORD_WEBHOOK, json=payload, timeout=10)
+        if r.status_code >= 400:
+            print("Discord error", r.status_code, r.text)
     except Exception as e:
-        print("Błąd przy wysyłaniu na Discord:", e)
+        print("Błąd wysłania do Discord:", e)
 
-# ===== Funkcja scraper Allegro =====
+# ===== SCRAPER ALLEGRO =====
 def scrape_allegro(term):
     url = f"https://allegro.pl/listing?string={term}"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(url, headers=headers)
+        r = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
-        offers = soup.select("div.selling")[:5]  # pierwsze 5 ofert
-        results = []
-        for o in offers:
-            title_tag = o.select_one("h2")
-            price_tag = o.select_one("span._1svub._lf05o")
-            url_tag = o.select_one("a")
-            location_tag = o.select_one("span._1lbi1")
-            if title_tag and price_tag and url_tag:
-                results.append({
-                    "title": title_tag.text.strip(),
-                    "price": price_tag.text.strip(),
-                    "url": url_tag['href'],
-                    "location": location_tag.text.strip() if location_tag else "Nieznana"
-                })
-        return results
+        # selektory mogą się różnić w zależności od strony - bierzemy bezpieczne elementy
+        items = []
+        # szukamy elementów artykułu — przeglądamy linki
+        for a in soup.select("a[href]"):
+            href = a.get("href")
+            if href and "/offer/" in href:
+                title = a.get_text(strip=True)
+                # spróbuj znaleźć cenę w rodzicu
+                parent = a.find_parent()
+                price = "Brak"
+                if parent:
+                    p = parent.select_one("span[data-role='price'], span._1svub")
+                    if p:
+                        price = p.get_text(strip=True)
+                items.append({"title": title or "Brak tytułu", "price": price, "url": href if href.startswith("http") else ("https://allegro.pl" + href), "location": "—"})
+        # unikalne i pierwsze 8
+        seen = set(); out = []
+        for it in items:
+            key = (it["title"], it["price"], it["url"])
+            if key in seen: continue
+            seen.add(key); out.append(it)
+            if len(out) >= 8: break
+        return out
     except Exception as e:
         print("Allegro błąd:", e)
         return []
 
-# ===== Funkcja scraper OLX =====
+# ===== SCRAPER OLX =====
 def scrape_olx(term):
     url = f"https://www.olx.pl/oferty/q-{term}/"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(url, headers=headers)
+        r = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
-        offers = soup.select("li[data-cy='l-card']")[:5]
-        results = []
-        for o in offers:
-            title_tag = o.select_one("h6")
-            price_tag = o.select_one("p")
-            url_tag = o.select_one("a")
-            location_tag = o.select_one("span[data-testid='location-date']")
-            if title_tag and price_tag and url_tag:
-                results.append({
-                    "title": title_tag.text.strip(),
-                    "price": price_tag.text.strip(),
-                    "url": url_tag['href'],
-                    "location": location_tag.text.strip() if location_tag else "Nieznana"
-                })
-        return results
+        out = []
+        for li in soup.select("a[href]"):
+            href = li.get("href")
+            if href and "/oferta/" in href:
+                title = li.get_text(strip=True)
+                # znajdź cenę w sąsiednich elementach
+                parent = li.find_parent()
+                price = "Brak"
+                if parent:
+                    p = parent.select_one("p")
+                    if p:
+                        price = p.get_text(strip=True)
+                out.append({"title": title or "Brak", "price": price, "url": href, "location": "—"})
+            if len(out) >= 8: break
+        return out
     except Exception as e:
         print("OLX błąd:", e)
         return []
 
-# ===== Funkcja scraper Vinted =====
+# ===== SCRAPER VINTED =====
 def scrape_vinted(term):
     url = f"https://www.vinted.pl/catalog?search_text={term}"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(url, headers=headers)
+        r = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
-        offers = soup.select("div.catalog-item")[:5]
-        results = []
-        for o in offers:
-            title_tag = o.select_one("a.catalog-item__title")
-            price_tag = o.select_one("div.catalog-item__price")
-            url_tag = o.select_one("a.catalog-item__link")
-            location_tag = o.select_one("div.catalog-item__location")
-            if title_tag and price_tag and url_tag:
-                results.append({
-                    "title": title_tag.text.strip(),
-                    "price": price_tag.text.strip(),
-                    "url": "https://www.vinted.pl" + url_tag['href'],
-                    "location": location_tag.text.strip() if location_tag else "Nieznana"
-                })
-        return results
+        out = []
+        for a in soup.select("a[href]"):
+            href = a.get("href")
+            if href and "/item/" in href:
+                title = a.get_text(strip=True)
+                # cena
+                price = "Brak"
+                parent = a.find_parent()
+                if parent:
+                    p = parent.select_one(".catalog-item__price, .price")
+                    if p:
+                        price = p.get_text(strip=True)
+                url_full = href if href.startswith("http") else ("https://www.vinted.pl" + href)
+                out.append({"title": title or "Brak", "price": price, "url": url_full, "location": "—"})
+            if len(out) >= 8: break
+        return out
     except Exception as e:
         print("Vinted błąd:", e)
         return []
 
-# ===== Główna pętla =====
-already_seen = set()
+# ===== GŁÓWNA PĘTLA BOTA (działa w tle) =====
+def bot_loop():
+    already_seen = set()
+    while True:
+        try:
+            for term in SEARCH_TERMS:
+                # Allegro
+                offers = scrape_allegro(term)
+                for o in offers:
+                    key = (o['title'], o['price'], o['url'])
+                    if key not in already_seen:
+                        print("Nowa (Allegro):", o['title'], o['price'])
+                        send_discord(o['title'], o['price'], o['url'], o.get('location','—'), "Allegro")
+                        already_seen.add(key)
+                # OLX
+                offers = scrape_olx(term)
+                for o in offers:
+                    key = (o['title'], o['price'], o['url'])
+                    if key not in already_seen:
+                        print("Nowa (OLX):", o['title'], o['price'])
+                        send_discord(o['title'], o['price'], o['url'], o.get('location','—'), "OLX")
+                        already_seen.add(key)
+                # Vinted
+                offers = scrape_vinted(term)
+                for o in offers:
+                    key = (o['title'], o['price'], o['url'])
+                    if key not in already_seen:
+                        print("Nowa (Vinted):", o['title'], o['price'])
+                        send_discord(o['title'], o['price'], o['url'], o.get('location','—'), "Vinted")
+                        already_seen.add(key)
+        except Exception as e:
+            print("Błąd w pętli bota:", e)
+        time.sleep(CHECK_INTERVAL)
 
-while True:
-    for term in SEARCH_TERMS:
-        for offer in scrape_allegro(term):
-            key = (offer['title'], offer['price'], offer['url'])
-            if key not in already_seen:
-                send_discord(offer['title'], offer['price'], offer['url'], offer['location'], "Allegro")
-                already_seen.add(key)
-        for offer in scrape_olx(term):
-            key = (offer['title'], offer['price'], offer['url'])
-            if key not in already_seen:
-                send_discord(offer['title'], offer['price'], offer['url'], offer['location'], "OLX")
-                already_seen.add(key)
-        for offer in scrape_vinted(term):
-            key = (offer['title'], offer['price'], offer['url'])
-            if key not in already_seen:
-                send_discord(offer['title'], offer['price'], offer['url'], offer['location'], "Vinted")
-                already_seen.add(key)
-    time.sleep(CHECK_INTERVAL)
+# ===== FLASK KEEP-ALIVE (dla Replit + UptimeRobot) =====
+app = Flask("keepalive")
+
+@app.route("/")
+def home():
+    return "OK", 200
+
+def run_flask():
+    port = int(os.getenv("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+    # start bot w tle
+    t = threading.Thread(target=bot_loop, daemon=True)
+    t.start()
+    # start serwera strony (keep-alive)
+    run_flask()
