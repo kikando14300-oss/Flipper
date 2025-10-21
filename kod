@@ -1,0 +1,80 @@
+import requests, time, sqlite3, os
+from bs4 import BeautifulSoup
+
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+DB = "seen.db"
+SEARCH_TERMS = ["iphone 12", "iphone 13 pro"]  # modele do śledzenia
+CHECK_INTERVAL = 60  # sekundy
+
+def init_db():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, title TEXT, price TEXT, url TEXT)")
+    conn.commit()
+    conn.close()
+
+def is_seen(offer_id):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM seen WHERE id=?", (offer_id,))
+    r = c.fetchone()
+    conn.close()
+    return r is not None
+
+def mark_seen(offer_id, title, price, url):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO seen(id, title, price, url) VALUES(?,?,?,?)", (offer_id, title, price, url))
+    conn.commit()
+    conn.close()
+
+def send_discord(title, price, url):
+    data = {
+        "username": "AukcjeBot",
+        "embeds": [{
+            "title": title,
+            "url": url,
+            "description": f"💸 Cena: {price}",
+            "color": 0x00ff00
+        }]
+    }
+    requests.post(DISCORD_WEBHOOK, json=data)
+
+def get_offers(term):
+    term_q = term.replace(" ", "+")
+    url = f"https://allegro.pl/listing?string={term_q}&order=d"
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    offers = []
+    for item in soup.select("article[data-analytics-view-custom-index]"):
+        link = item.find("a", {"data-analytics-view-custom-index": True})
+        if not link:
+            continue
+        offer_url = link.get("href")
+        offer_id = offer_url.split("/")[-1].split("?")[0]
+        title_el = item.select_one("h2")
+        price_el = item.select_one("span[data-role='price']") or item.select_one("span[data-testid='price']")
+        title = title_el.text.strip() if title_el else "Brak tytułu"
+        price = price_el.text.strip() if price_el else "Brak ceny"
+        offers.append({"id": offer_id, "title": title, "price": price, "url": offer_url})
+    return offers
+
+def main():
+    init_db()
+    while True:
+        for term in SEARCH_TERMS:
+            print(f"[INFO] Szukam nowości: {term}")
+            try:
+                offers = get_offers(term)
+                for o in offers[:5]:  # 5 najnowszych
+                    if not is_seen(o["id"]):
+                        print(f"🆕 Nowa oferta: {o['title']} — {o['price']}")
+                        send_discord(o["title"], o["price"], o["url"])
+                        mark_seen(o["id"], o["title"], o["price"], o["url"])
+            except Exception as e:
+                print("Błąd:", e)
+        time.sleep(CHECK_INTERVAL)
+
+if __name__ == "__main__":
+    main()
