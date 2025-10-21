@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: aukcje-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python check_offers.py"
+    plan: free
+    envVars:
+      - key: DISCORD_WEBHOOK
+        sync: false
